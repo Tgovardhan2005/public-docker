@@ -1,0 +1,31 @@
+name: Security Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Basic Security Check
+        # Check for vulnerabilities in dependencies
+        run: npm audit --audit-level=high
+
+      - name: Lint Code
+        # Basic linting check for code quality issues
+        run: npm run lint
