@@ -1,12 +1,12 @@
 name: Full DevOps Pipeline
- 
+
 on:
   push:
     branches:
-      - master
+      - main
 
 env:
-  IMAGE_NAME: govardhandev/kec-x-guvi-collaboration-portal-web:latest
+  IMAGE_NAME: govardhandev/kec-x-guvi-collaboration-portal-web
   CLUSTER_NAME: gov-eks
   REGION: ${{ secrets.AWS_REGION }}
   NAMESPACE: myapp
@@ -15,7 +15,7 @@ env:
 jobs:
 
 # ==========================================
-# STAGE 1 - TEST
+# STAGE 1 – TEST
 # ==========================================
   test:
     runs-on: ubuntu-latest
@@ -28,7 +28,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: app/package-lock.json
 
       - name: Install dependencies
@@ -44,7 +44,7 @@ jobs:
 
 
 # ==========================================
-# STAGE 2 - BUILD & PUSH IMAGE
+# STAGE 2 – BUILD & PUSH IMAGE
 # ==========================================
   build:
     runs-on: ubuntu-latest
@@ -76,7 +76,7 @@ jobs:
 
 
 # ==========================================
-# STAGE 3 - DEPLOY TO EKS (NO INFRA CHANGES)
+# STAGE 3 – DEPLOY TO EKS
 # ==========================================
   deploy:
     runs-on: ubuntu-latest
@@ -101,128 +101,54 @@ jobs:
           kubectl version --client
 
       - name: Check if EKS cluster exists
-        id: check_cluster
         run: |
-          if aws eks describe-cluster --name $CLUSTER_NAME --region $REGION &> /dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "EKS cluster '$CLUSTER_NAME' exists"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "EKS cluster '$CLUSTER_NAME' does not exist"
-            echo "Please create the cluster first using Terraform locally or manually"
-            exit 1
-          fi
+          aws eks describe-cluster --name $CLUSTER_NAME --region $REGION
 
       - name: Connect to EKS Cluster
         run: |
-          echo "Connecting to EKS cluster..."
           aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
 
       - name: Verify cluster connection
         run: |
-          echo "Verifying cluster connection..."
           kubectl cluster-info
-          echo ""
-          echo "Node status:"
           kubectl get nodes
-          echo ""
-          echo "Cluster connection successful!"
 
       - name: Create namespace
         run: |
-          echo "Creating/verifying namespace: $NAMESPACE"
           kubectl apply -f k8s/namespace.yaml
-          kubectl get namespace $NAMESPACE
 
       - name: Validate Kubernetes manifests
         run: |
-          echo "Validating Kubernetes manifests..."
           kubectl apply --dry-run=client -f k8s/deployment.yaml
           kubectl apply --dry-run=client -f k8s/service.yaml
           kubectl apply --dry-run=client -f k8s/ingress.yaml
-          echo "Manifests validation successful!"
 
       - name: Deploy application
         run: |
-          echo "Deploying application to namespace: $NAMESPACE"
           kubectl apply -f k8s/deployment.yaml -n $NAMESPACE
           kubectl apply -f k8s/service.yaml -n $NAMESPACE
 
-      - name: Wait for deployment to be ready
-        run: |
-          echo "Waiting for deployment to be ready..."
-          kubectl rollout status deployment/$DEPLOYMENT_NAME -n $NAMESPACE --timeout=5m
-
       - name: Update deployment with latest image
         run: |
-          echo "Updating deployment with latest image: $IMAGE_NAME:${{ github.sha }}"
           kubectl set image deployment/$DEPLOYMENT_NAME \
-            $DEPLOYMENT_NAME=$IMAGE_NAME:${{ github.sha }} \
+            $DEPLOYMENT_NAME=${{ env.IMAGE_NAME }}:${{ github.sha }} \
             -n $NAMESPACE
-          echo "Waiting for rollout to complete..."
+
+      - name: Wait for rollout
+        run: |
           kubectl rollout status deployment/$DEPLOYMENT_NAME -n $NAMESPACE --timeout=5m
 
-      - name: Install/Verify Ingress Controller
+      - name: Install ingress-nginx (if missing)
         run: |
-          echo "Checking for ingress-nginx controller..."
           if ! kubectl get namespace ingress-nginx &> /dev/null; then
-            echo "Installing ingress-nginx controller..."
             kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.5/deploy/static/provider/cloud/deploy.yaml
-            echo "Waiting for ingress controller to be ready..."
-            kubectl wait --namespace ingress-nginx \
-              --for=condition=ready pod \
-              --selector=app.kubernetes.io/component=controller \
-              --timeout=300s
-          else
-            echo "Ingress controller already installed"
           fi
 
       - name: Deploy ingress
         run: |
-          echo "Deploying ingress..."
           kubectl apply -f k8s/ingress.yaml -n $NAMESPACE
-          sleep 10
 
-      - name: Get deployment status
-        if: always()
+      - name: Show deployment status
         run: |
-          echo "=========================================="
-          echo "DEPLOYMENT STATUS"
-          echo "=========================================="
           kubectl get all -n $NAMESPACE
-          echo ""
-          echo "=========================================="
-          echo "INGRESS INFORMATION"
-          echo "=========================================="
-          kubectl get ingress -n $NAMESPACE -o wide || echo "No ingress found in namespace"
-          echo ""
-          echo "=========================================="
-          echo "INGRESS CONTROLLER SERVICE"
-          echo "=========================================="
-          kubectl get svc -n ingress-nginx || echo "Ingress controller not found"
-          echo ""
-          echo "=========================================="
-          echo "POD LOGS (Last 20 lines)"
-          echo "=========================================="
-          kubectl logs -n $NAMESPACE -l app=$DEPLOYMENT_NAME --tail=20 || echo "No logs available yet"
-
-      - name: Show application endpoint
-        run: |
-          echo "=========================================="
-          echo "APPLICATION ENDPOINTS"
-          echo "=========================================="
-          INGRESS_HOST=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          if [ -z "$INGRESS_HOST" ]; then
-            INGRESS_HOST=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          fi
-
-          if [ -n "$INGRESS_HOST" ] && [ "$INGRESS_HOST" != "pending" ]; then
-            echo "LoadBalancer URL: http://$INGRESS_HOST"
-            echo ""
-            echo "Note: It may take a few minutes for DNS to propagate"
-          else
-            echo "LoadBalancer is still being provisioned..."
-            echo "Run this command to check status:"
-            echo "kubectl get svc -n ingress-nginx ingress-nginx-controller"
-          fi
-          echo "=========================================="
+          kubectl get ingress -n $NAMESPACE
